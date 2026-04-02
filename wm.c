@@ -25,6 +25,8 @@ typedef struct {
 static void focusnext(const Arg *arg);
 static void focusprev(const Arg *arg);
 static void killclient(const Arg *arg);
+static void movedown(const Arg *arg);   /* new */
+static void moveup(const Arg *arg);     /* new */
 static void movetows(const Arg *arg);
 static void quit(const Arg *arg);
 static void setmfact(const Arg *arg);
@@ -37,6 +39,8 @@ static Key keys[] = {
     { MODMASK,             XK_space,  spawn,            {.v = menucmd} },
     { MODMASK,             XK_j,      focusnext,        {0} },
     { MODMASK,             XK_k,      focusprev,        {0} },
+    { MODMASK|ShiftMask,   XK_j,      movedown,         {0} },  /* new */
+    { MODMASK|ShiftMask,   XK_k,      moveup,           {0} },  /* new */
     { MODMASK,             XK_h,      setmfact,         {.f = -0.05} },
     { MODMASK,             XK_l,      setmfact,         {.f = +0.05} },
     { MODMASK,             XK_q,      killclient,       {0} },
@@ -93,7 +97,7 @@ arrange(void)
 
     for (c = clients; c; c = c->next) {
         if (c->ws != curws) {
-            XMoveWindow(dpy, c->win, sw * 2, 0); 
+            XMoveWindow(dpy, c->win, sw * 2, 0);
             continue;
         }
         if (c->isfullscreen) {
@@ -132,7 +136,7 @@ destroynotify(XEvent *e)
     if ((c = *tc)) {
         *tc = c->next;
         free(c);
-        if (sel == c) sel = NULL; 
+        if (sel == c) sel = NULL;
         arrange();
         if (!sel) focusnext(NULL);
         else focus(sel);
@@ -183,6 +187,67 @@ focusprev(const Arg *arg)
     focus(p);
 }
 
+/*
+ * moveup: swap sel with its predecessor in the list.
+ * In layout terms: moves the window one slot toward the master (left/top).
+ * Bound to Mod+Shift+K.
+ */
+static void
+moveup(const Arg *arg)
+{
+    Client *c, *prev = NULL, *pprev = NULL;
+    (void)arg;
+    if (!sel || sel == clients) return;
+
+    /* Walk to find the node just before sel (prev) and the one before that (pprev). */
+    for (c = clients; c && c != sel; c = c->next) {
+        pprev = prev;
+        prev  = c;
+    }
+    if (!prev) return;
+
+    /*
+     * Before: ... pprev -> prev -> sel -> sel->next ...
+     * After:  ... pprev -> sel  -> prev -> sel->next ...
+     */
+    prev->next = sel->next;       /* detach sel */
+    sel->next  = prev;            /* sel now precedes prev */
+    if (pprev) pprev->next = sel;
+    else       clients     = sel;
+
+    arrange();
+}
+
+/*
+ * movedown: swap sel with its successor in the list.
+ * In layout terms: moves the window one slot away from the master (right/down).
+ * Bound to Mod+Shift+J.
+ */
+static void
+movedown(const Arg *arg)
+{
+    Client *c, *prev = NULL, *next;
+    (void)arg;
+    if (!sel || !sel->next) return;
+
+    next = sel->next;
+
+    /* Find the node just before sel. */
+    for (c = clients; c && c != sel; c = c->next)
+        prev = c;
+
+    /*
+     * Before: ... prev -> sel  -> next -> next->next ...
+     * After:  ... prev -> next -> sel  -> next->next ...
+     */
+    sel->next  = next->next;      /* detach next from after sel */
+    next->next = sel;             /* next now precedes sel */
+    if (prev) prev->next = next;
+    else      clients    = next;
+
+    arrange();
+}
+
 static void
 keypress(XEvent *e)
 {
@@ -203,13 +268,25 @@ killclient(const Arg *arg)
 static void
 manage(Window w, XWindowAttributes *wa)
 {
-    Client *c;
+    Client *c, *tail;
     if (!(c = calloc(1, sizeof(Client)))) err(1, "calloc");
-    c->win = w;
-    c->ws = curws;
+    c->win          = w;
+    c->ws           = curws;
     c->isfullscreen = 0;
-    c->next = clients;
-    clients = c;
+    c->next         = NULL;
+
+    /*
+     * Append to the tail so spawn order matches visual order:
+     * 1st window → master (left), subsequent windows → stack (right),
+     * each new one splitting the stack into a smaller slice.
+     */
+    if (!clients) {
+        clients = c;
+    } else {
+        for (tail = clients; tail->next; tail = tail->next);
+        tail->next = c;
+    }
+
     XSelectInput(dpy, w, EnterWindowMask | FocusChangeMask | PropertyChangeMask | StructureNotifyMask);
     XMapWindow(dpy, w);
     arrange();
@@ -290,30 +367,30 @@ main(void)
 {
     XEvent ev;
 
-    if (!(dpy = XOpenDisplay(NULL))) 
+    if (!(dpy = XOpenDisplay(NULL)))
         errx(1, "cannot open display");
-    
+
     signal(SIGCHLD, SIG_IGN);
 
 #ifdef __OpenBSD__
-    if (pledge("stdio rpath proc exec", NULL) == -1) 
+    if (pledge("stdio rpath proc exec", NULL) == -1)
         err(1, "pledge");
 #endif
 
     root = DefaultRootWindow(dpy);
-    sw = DisplayWidth(dpy, DefaultScreen(dpy));
-    sh = DisplayHeight(dpy, DefaultScreen(dpy));
+    sw   = DisplayWidth(dpy, DefaultScreen(dpy));
+    sh   = DisplayHeight(dpy, DefaultScreen(dpy));
 
     XSelectInput(dpy, root, SubstructureRedirectMask | SubstructureNotifyMask | KeyPressMask);
-    
+
     for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++)
         XGrabKey(dpy, XKeysymToKeycode(dpy, keys[i].keysym), keys[i].mod, root, True, GrabModeAsync, GrabModeAsync);
 
     while (running && !XNextEvent(dpy, &ev)) {
-        if (ev.type == MapRequest) maprequest(&ev);
+        if      (ev.type == MapRequest)   maprequest(&ev);
         else if (ev.type == DestroyNotify) destroynotify(&ev);
-        else if (ev.type == KeyPress) keypress(&ev);
-        else if (ev.type == EnterNotify) enternotify(&ev);
+        else if (ev.type == KeyPress)      keypress(&ev);
+        else if (ev.type == EnterNotify)   enternotify(&ev);
     }
 
     XCloseDisplay(dpy);
