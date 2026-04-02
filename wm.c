@@ -1,296 +1,146 @@
-#include <sys/wait.h>
 #include <err.h>
 #include <signal.h>
-#include <stdlib.h>
 #include <unistd.h>
 #include <X11/keysym.h>
 #include <X11/Xlib.h>
-#include <X11/Xutil.h>
 
-/* --- Configuration --- */
-#define MODMASK Mod4Mask
-#define NUM_WS  9
+#define MODMASK  Mod4Mask
+#define NUM_WS   9
+#define MAX_WIN  32
 
-static const char *termcmd[] = { "st", NULL };
+static const char *termcmd[] = { "st",        NULL };
 static const char *menucmd[] = { "dmenu_run", NULL };
 
-typedef union { int i; float f; const char **v; } Arg;
-typedef struct {
-    unsigned int mod;
-    KeySym keysym;
-    void (*func)(const Arg *);
-    Arg arg;
-} Key;
+typedef union  { int i; float f; const char **v; } Arg;
+typedef struct { unsigned int mod; KeySym sym; void (*fn)(const Arg *); Arg arg; } Key;
 
-static void focusnext(const Arg *arg);
-static void focusprev(const Arg *arg);
-static void killclient(const Arg *arg);
-static void movedown(const Arg *arg);   /* new */
-static void moveup(const Arg *arg);     /* new */
-static void movetows(const Arg *arg);
-static void quit(const Arg *arg);
-static void setmfact(const Arg *arg);
-static void spawn(const Arg *arg);
-static void togglefullscreen(const Arg *arg);
-static void view(const Arg *arg);
+/* forward declarations required by the keys[] static initializer */
+static void focusdir(const Arg *);
+static void killclient(const Arg *);
+static void moveclient(const Arg *);
+static void movetows(const Arg *);
+static void quit(const Arg *);
+static void setmfact(const Arg *);
+static void spawn(const Arg *);
+static void togglefs(const Arg *);
+static void view(const Arg *);
+
+#define WS(n) \
+    { MODMASK,           XK_##n, view,     {.i = n-1} }, \
+    { MODMASK|ShiftMask, XK_##n, movetows, {.i = n-1} }
 
 static Key keys[] = {
-    { MODMASK,             XK_Return, spawn,            {.v = termcmd} },
-    { MODMASK,             XK_space,  spawn,            {.v = menucmd} },
-    { MODMASK,             XK_j,      focusnext,        {0} },
-    { MODMASK,             XK_k,      focusprev,        {0} },
-    { MODMASK|ShiftMask,   XK_j,      movedown,         {0} },  /* new */
-    { MODMASK|ShiftMask,   XK_k,      moveup,           {0} },  /* new */
-    { MODMASK,             XK_h,      setmfact,         {.f = -0.05} },
-    { MODMASK,             XK_l,      setmfact,         {.f = +0.05} },
-    { MODMASK,             XK_q,      killclient,       {0} },
-    { MODMASK|ShiftMask,   XK_q,      quit,             {0} },
-    { MODMASK,             XK_f,      togglefullscreen, {0} },
-
-    { MODMASK,             XK_1,      view,             {.i = 0} },
-    { MODMASK,             XK_2,      view,             {.i = 1} },
-    { MODMASK,             XK_3,      view,             {.i = 2} },
-    { MODMASK,             XK_4,      view,             {.i = 3} },
-    { MODMASK,             XK_5,      view,             {.i = 4} },
-    { MODMASK,             XK_6,      view,             {.i = 5} },
-    { MODMASK,             XK_7,      view,             {.i = 6} },
-    { MODMASK,             XK_8,      view,             {.i = 7} },
-    { MODMASK,             XK_9,      view,             {.i = 8} },
-
-    { MODMASK|ShiftMask,   XK_1,      movetows,         {.i = 0} },
-    { MODMASK|ShiftMask,   XK_2,      movetows,         {.i = 1} },
-    { MODMASK|ShiftMask,   XK_3,      movetows,         {.i = 2} },
-    { MODMASK|ShiftMask,   XK_4,      movetows,         {.i = 3} },
-    { MODMASK|ShiftMask,   XK_5,      movetows,         {.i = 4} },
-    { MODMASK|ShiftMask,   XK_6,      movetows,         {.i = 5} },
-    { MODMASK|ShiftMask,   XK_7,      movetows,         {.i = 6} },
-    { MODMASK|ShiftMask,   XK_8,      movetows,         {.i = 7} },
-    { MODMASK|ShiftMask,   XK_9,      movetows,         {.i = 8} },
+    { MODMASK,           XK_Return, spawn,      {.v = termcmd} },
+    { MODMASK,           XK_space,  spawn,      {.v = menucmd} },
+    { MODMASK,           XK_j,      focusdir,   {.i = +1} },
+    { MODMASK,           XK_k,      focusdir,   {.i = -1} },
+    { MODMASK|ShiftMask, XK_j,      moveclient, {.i = +1} },
+    { MODMASK|ShiftMask, XK_k,      moveclient, {.i = -1} },
+    { MODMASK,           XK_h,      setmfact,   {.f = -0.05f} },
+    { MODMASK,           XK_l,      setmfact,   {.f = +0.05f} },
+    { MODMASK,           XK_q,      killclient, {0} },
+    { MODMASK|ShiftMask, XK_q,      quit,       {0} },
+    { MODMASK,           XK_f,      togglefs,   {0} },
+    WS(1),WS(2),WS(3),WS(4),WS(5),WS(6),WS(7),WS(8),WS(9),
 };
 
-/* --- State & Structures --- */
-typedef struct Client Client;
-struct Client {
-    Window win;
-    int ws;
-    int isfullscreen;
-    Client *next;
-};
+typedef struct { Window win; int ws, fs; } Client;
 
 static Display *dpy;
-static Window root;
-static int sw, sh, running = 1, curws = 0;
-static float mfact = 0.5;
-static Client *clients = NULL, *sel = NULL;
+static Window   root;
+static int      sw, sh, nclients, curws, running = 1, sel = -1;
+static float    mfact = 0.5f;
+static Client   pool[MAX_WIN];
 
-/* --- Core Functionality --- */
 static void
 arrange(void)
 {
-    Client *c;
-    int n = 0, i = 0, mw, bh;
-
-    for (c = clients; c; c = c->next)
-        if (c->ws == curws) n++;
-
-    mw = (n <= 1) ? sw : sw * mfact;
-
-    for (c = clients; c; c = c->next) {
-        if (c->ws != curws) {
-            XMoveWindow(dpy, c->win, sw * 2, 0);
-            continue;
-        }
-        if (c->isfullscreen) {
-            XMoveResizeWindow(dpy, c->win, 0, 0, sw, sh);
-            XRaiseWindow(dpy, c->win);
-        } else {
-            if (i == 0) {
-                XMoveResizeWindow(dpy, c->win, 0, 0, mw, sh);
-            } else {
-                bh = sh / (n - 1);
-                XMoveResizeWindow(dpy, c->win, mw, (i - 1) * bh, sw - mw, bh);
-            }
-            i++;
-        }
+    int n = 0, i = 0, mw;
+    for (int j = 0; j < nclients; j++)
+        if (pool[j].ws == curws) n++;
+    mw = n <= 1 ? sw : (int)(sw * mfact);
+    for (int j = 0; j < nclients; j++) {
+        Client *c = &pool[j];
+        if (c->ws != curws) { XMoveWindow(dpy, c->win, sw * 2, 0); continue; }
+        if (c->fs)          { XMoveResizeWindow(dpy, c->win, 0, 0, sw, sh); XRaiseWindow(dpy, c->win); }
+        else if (i == 0)      XMoveResizeWindow(dpy, c->win, 0, 0, mw, sh);
+        else                { int bh = sh / (n-1); XMoveResizeWindow(dpy, c->win, mw, (i-1)*bh, sw-mw, bh); }
+        i++;
     }
     XSync(dpy, False);
 }
 
 static void
-focus(Client *c)
+focus(int idx)
 {
-    sel = (c && c->ws == curws) ? c : NULL;
-    if (sel) {
-        XSetInputFocus(dpy, sel->win, RevertToPointerRoot, CurrentTime);
-        XRaiseWindow(dpy, sel->win);
-    } else {
-        XSetInputFocus(dpy, root, RevertToPointerRoot, CurrentTime);
+    sel = (idx >= 0 && idx < nclients && pool[idx].ws == curws) ? idx : -1;
+    if (sel >= 0) { XSetInputFocus(dpy, pool[sel].win, RevertToPointerRoot, CurrentTime); XRaiseWindow(dpy, pool[sel].win); }
+    else            XSetInputFocus(dpy, root,           RevertToPointerRoot, CurrentTime);
+}
+
+static void
+focusdir(const Arg *a)
+{
+    if (!nclients) return;
+    int dir = a->i > 0 ? 1 : -1;
+    int i   = sel >= 0 ? (sel + dir + nclients) % nclients : 0;
+    for (int n = 0; n < nclients; n++, i = (i + dir + nclients) % nclients)
+        if (pool[i].ws == curws) { focus(i); return; }
+}
+
+static void
+moveclient(const Arg *a)
+{
+    if (sel < 0 || !nclients) return;
+    int dir = a->i > 0 ? 1 : -1, j = sel;
+    for (int n = 0; n < nclients; n++) {
+        j = (j + dir + nclients) % nclients;
+        if (pool[j].ws == curws) break;
     }
+    if (j == sel) return;
+    Client tmp = pool[sel]; pool[sel] = pool[j]; pool[j] = tmp;
+    sel = j;
+    arrange();
+}
+
+static void killclient(const Arg *a) { (void)a; if (sel>=0) XKillClient(dpy, pool[sel].win); }
+static void quit(const Arg *a)       { (void)a; running = 0; }
+static void togglefs(const Arg *a)   { (void)a; if (sel>=0) { pool[sel].fs ^= 1; arrange(); } }
+static void setmfact(const Arg *a)   { mfact += a->f; if (mfact<0.1f) mfact=0.1f; if (mfact>0.9f) mfact=0.9f; arrange(); }
+static void spawn(const Arg *a)      { if (fork()==0) { if (dpy) close(ConnectionNumber(dpy)); setsid(); execvp(((char**)a->v)[0],(char**)a->v); err(1,"execvp %s",((char**)a->v)[0]); } }
+
+static void
+view(const Arg *a)
+{
+    if (a->i == curws || a->i < 0 || a->i >= NUM_WS) return;
+    curws = a->i; arrange(); focusdir(&(Arg){.i=+1});
+}
+
+static void
+movetows(const Arg *a)
+{
+    if (sel < 0 || a->i < 0 || a->i >= NUM_WS || a->i == curws) return;
+    pool[sel].ws = a->i; arrange(); focusdir(&(Arg){.i=+1});
+}
+
+static int
+winfind(Window w)
+{
+    for (int i = 0; i < nclients; i++)
+        if (pool[i].win == w) return i;
+    return -1;
 }
 
 static void
 destroynotify(XEvent *e)
 {
-    Client **tc, *c;
-    for (tc = &clients; *tc && (*tc)->win != e->xdestroywindow.window; tc = &(*tc)->next);
-    if ((c = *tc)) {
-        *tc = c->next;
-        free(c);
-        if (sel == c) sel = NULL;
-        arrange();
-        if (!sel) focusnext(NULL);
-        else focus(sel);
-    }
-}
-
-static void
-enternotify(XEvent *e)
-{
-    Client *c;
-    if (e->xcrossing.mode != NotifyNormal || e->xcrossing.detail == NotifyInferior) return;
-    for (c = clients; c; c = c->next)
-        if (c->win == e->xcrossing.window && c->ws == curws) {
-            focus(c);
-            return;
-        }
-}
-
-static void
-focusnext(const Arg *arg)
-{
-    Client *c;
-    (void)arg;
-    if (!sel) {
-        for (c = clients; c && c->ws != curws; c = c->next);
-        focus(c);
-        return;
-    }
-    for (c = sel->next; c && c->ws != curws; c = c->next);
-    if (!c) {
-        for (c = clients; c && c->ws != curws; c = c->next);
-    }
-    focus(c);
-}
-
-static void
-focusprev(const Arg *arg)
-{
-    Client *c, *p = NULL;
-    (void)arg;
-    if (!sel) return;
-    for (c = clients; c && c != sel; c = c->next)
-        if (c->ws == curws) p = c;
-    if (!p) {
-        for (c = clients; c; c = c->next)
-            if (c->ws == curws) p = c;
-    }
-    focus(p);
-}
-
-/*
- * moveup: swap sel with its predecessor in the list.
- * In layout terms: moves the window one slot toward the master (left/top).
- * Bound to Mod+Shift+K.
- */
-static void
-moveup(const Arg *arg)
-{
-    Client *c, *prev = NULL, *pprev = NULL;
-    (void)arg;
-    if (!sel || sel == clients) return;
-
-    /* Walk to find the node just before sel (prev) and the one before that (pprev). */
-    for (c = clients; c && c != sel; c = c->next) {
-        pprev = prev;
-        prev  = c;
-    }
-    if (!prev) return;
-
-    /*
-     * Before: ... pprev -> prev -> sel -> sel->next ...
-     * After:  ... pprev -> sel  -> prev -> sel->next ...
-     */
-    prev->next = sel->next;       /* detach sel */
-    sel->next  = prev;            /* sel now precedes prev */
-    if (pprev) pprev->next = sel;
-    else       clients     = sel;
-
+    int i = winfind(e->xdestroywindow.window);
+    if (i < 0) return;
+    pool[i] = pool[--nclients];
+    if      (sel == i)        sel = -1;
+    else if (sel == nclients) sel = i;
     arrange();
-}
-
-/*
- * movedown: swap sel with its successor in the list.
- * In layout terms: moves the window one slot away from the master (right/down).
- * Bound to Mod+Shift+J.
- */
-static void
-movedown(const Arg *arg)
-{
-    Client *c, *prev = NULL, *next;
-    (void)arg;
-    if (!sel || !sel->next) return;
-
-    next = sel->next;
-
-    /* Find the node just before sel. */
-    for (c = clients; c && c != sel; c = c->next)
-        prev = c;
-
-    /*
-     * Before: ... prev -> sel  -> next -> next->next ...
-     * After:  ... prev -> next -> sel  -> next->next ...
-     */
-    sel->next  = next->next;      /* detach next from after sel */
-    next->next = sel;             /* next now precedes sel */
-    if (prev) prev->next = next;
-    else      clients    = next;
-
-    arrange();
-}
-
-static void
-keypress(XEvent *e)
-{
-    KeySym keysym = XLookupKeysym(&e->xkey, 0);
-    for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++)
-        if (keysym == keys[i].keysym && keys[i].mod == e->xkey.state && keys[i].func)
-            keys[i].func(&keys[i].arg);
-}
-
-static void
-killclient(const Arg *arg)
-{
-    (void)arg;
-    if (!sel) return;
-    XKillClient(dpy, sel->win);
-}
-
-static void
-manage(Window w, XWindowAttributes *wa)
-{
-    Client *c, *tail;
-    if (!(c = calloc(1, sizeof(Client)))) err(1, "calloc");
-    c->win          = w;
-    c->ws           = curws;
-    c->isfullscreen = 0;
-    c->next         = NULL;
-
-    /*
-     * Append to the tail so spawn order matches visual order:
-     * 1st window → master (left), subsequent windows → stack (right),
-     * each new one splitting the stack into a smaller slice.
-     */
-    if (!clients) {
-        clients = c;
-    } else {
-        for (tail = clients; tail->next; tail = tail->next);
-        tail->next = c;
-    }
-
-    XSelectInput(dpy, w, EnterWindowMask | FocusChangeMask | PropertyChangeMask | StructureNotifyMask);
-    XMapWindow(dpy, w);
-    arrange();
-    focus(c);
+    focusdir(&(Arg){.i=+1});
 }
 
 static void
@@ -298,101 +148,52 @@ maprequest(XEvent *e)
 {
     XWindowAttributes wa;
     if (!XGetWindowAttributes(dpy, e->xmaprequest.window, &wa) || wa.override_redirect) return;
-    manage(e->xmaprequest.window, &wa);
-}
-
-static void
-movetows(const Arg *arg)
-{
-    if (sel && arg->i >= 0 && arg->i < NUM_WS && arg->i != curws) {
-        sel->ws = arg->i;
-        arrange();
-        Client *c;
-        for (c = clients; c && c->ws != curws; c = c->next);
-        focus(c);
-    }
-}
-
-static void
-quit(const Arg *arg)
-{
-    (void)arg;
-    running = 0;
-}
-
-static void
-setmfact(const Arg *arg)
-{
-    mfact += arg->f;
-    if (mfact < 0.1) mfact = 0.1;
-    if (mfact > 0.9) mfact = 0.9;
+    if (nclients >= MAX_WIN) { warnx("MAX_WIN (%d) reached, ignoring new window", MAX_WIN); return; }
+    pool[nclients] = (Client){ e->xmaprequest.window, curws, 0 };
+    XSelectInput(dpy, pool[nclients].win, EnterWindowMask | StructureNotifyMask);
+    XMapWindow(dpy, pool[nclients].win);
+    focus(nclients++);
     arrange();
 }
 
 static void
-spawn(const Arg *arg)
+enternotify(XEvent *e)
 {
-    if (fork() == 0) {
-        if (dpy) close(ConnectionNumber(dpy));
-        setsid();
-        execvp(((char **)arg->v)[0], (char **)arg->v);
-        err(1, "execvp %s", ((char **)arg->v)[0]);
-    }
+    int i;
+    if (e->xcrossing.mode != NotifyNormal || e->xcrossing.detail == NotifyInferior) return;
+    if ((i = winfind(e->xcrossing.window)) >= 0 && pool[i].ws == curws) focus(i);
 }
 
 static void
-togglefullscreen(const Arg *arg)
+keypress(XEvent *e)
 {
-    (void)arg;
-    if (sel) {
-        sel->isfullscreen = !sel->isfullscreen;
-        arrange();
-    }
-}
-
-static void
-view(const Arg *arg)
-{
-    if (arg->i >= 0 && arg->i < NUM_WS && arg->i != curws) {
-        curws = arg->i;
-        arrange();
-        Client *c;
-        for (c = clients; c && c->ws != curws; c = c->next);
-        focus(c);
-    }
+    KeySym sym = XLookupKeysym(&e->xkey, 0);
+    for (size_t i = 0; i < sizeof keys / sizeof *keys; i++)
+        if (sym == keys[i].sym && keys[i].mod == e->xkey.state && keys[i].fn)
+            keys[i].fn(&keys[i].arg);
 }
 
 int
 main(void)
 {
     XEvent ev;
-
-    if (!(dpy = XOpenDisplay(NULL)))
-        errx(1, "cannot open display");
-
+    if (!(dpy = XOpenDisplay(NULL))) errx(1, "cannot open display");
     signal(SIGCHLD, SIG_IGN);
-
 #ifdef __OpenBSD__
-    if (pledge("stdio rpath proc exec", NULL) == -1)
-        err(1, "pledge");
+    if (pledge("stdio rpath proc exec", NULL) == -1) err(1, "pledge");
 #endif
-
     root = DefaultRootWindow(dpy);
-    sw   = DisplayWidth(dpy, DefaultScreen(dpy));
+    sw   = DisplayWidth(dpy,  DefaultScreen(dpy));
     sh   = DisplayHeight(dpy, DefaultScreen(dpy));
-
     XSelectInput(dpy, root, SubstructureRedirectMask | SubstructureNotifyMask | KeyPressMask);
-
-    for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++)
-        XGrabKey(dpy, XKeysymToKeycode(dpy, keys[i].keysym), keys[i].mod, root, True, GrabModeAsync, GrabModeAsync);
-
+    for (size_t i = 0; i < sizeof keys / sizeof *keys; i++)
+        XGrabKey(dpy, XKeysymToKeycode(dpy, keys[i].sym), keys[i].mod, root, True, GrabModeAsync, GrabModeAsync);
     while (running && !XNextEvent(dpy, &ev)) {
-        if      (ev.type == MapRequest)   maprequest(&ev);
+        if      (ev.type == MapRequest)    maprequest(&ev);
         else if (ev.type == DestroyNotify) destroynotify(&ev);
         else if (ev.type == KeyPress)      keypress(&ev);
         else if (ev.type == EnterNotify)   enternotify(&ev);
     }
-
     XCloseDisplay(dpy);
     return 0;
 }
