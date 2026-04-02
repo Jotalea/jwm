@@ -42,12 +42,26 @@ static Key keys[] = {
     { MODMASK,             XK_q,      killclient,       {0} },
     { MODMASK|ShiftMask,   XK_q,      quit,             {0} },
     { MODMASK,             XK_f,      togglefullscreen, {0} },
+
     { MODMASK,             XK_1,      view,             {.i = 0} },
     { MODMASK,             XK_2,      view,             {.i = 1} },
     { MODMASK,             XK_3,      view,             {.i = 2} },
+    { MODMASK,             XK_4,      view,             {.i = 3} },
+    { MODMASK,             XK_5,      view,             {.i = 4} },
+    { MODMASK,             XK_6,      view,             {.i = 5} },
+    { MODMASK,             XK_7,      view,             {.i = 6} },
+    { MODMASK,             XK_8,      view,             {.i = 7} },
+    { MODMASK,             XK_9,      view,             {.i = 8} },
+
     { MODMASK|ShiftMask,   XK_1,      movetows,         {.i = 0} },
     { MODMASK|ShiftMask,   XK_2,      movetows,         {.i = 1} },
     { MODMASK|ShiftMask,   XK_3,      movetows,         {.i = 2} },
+    { MODMASK|ShiftMask,   XK_4,      movetows,         {.i = 3} },
+    { MODMASK|ShiftMask,   XK_5,      movetows,         {.i = 4} },
+    { MODMASK|ShiftMask,   XK_6,      movetows,         {.i = 5} },
+    { MODMASK|ShiftMask,   XK_7,      movetows,         {.i = 6} },
+    { MODMASK|ShiftMask,   XK_8,      movetows,         {.i = 7} },
+    { MODMASK|ShiftMask,   XK_9,      movetows,         {.i = 8} },
 };
 
 /* --- State & Structures --- */
