@@ -20,8 +20,7 @@ static float    splitratio = 0.5f;
 static Client   clients[NSPACE][NCLIENT];
 static int      nclients[NSPACE], selclient[NSPACE];
 
-static int
-xerror(Display *d, XErrorEvent *e)
+static int xerror(Display *d, XErrorEvent *e)
 {
 	/* Safely ignore all asynchronous X11 protocol errors */
         return 0; (void) d, (void)e;
