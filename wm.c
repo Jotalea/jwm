@@ -27,15 +27,11 @@ xerror(Display *d, XErrorEvent *e)
         return 0; (void) d, (void)e;
 }
 
-static void
-tile(void)
-{
+static void tile(void) {
 	for (int s = 0; s < NSPACE; s++) {
 		int nc = nclients[s];
 		
-		if (nc > 0) {
-			selclient[s] %= nc;
-		}
+		if (nc > 0) { selclient[s] %= nc; }
 
 		for (int i = 0; i < nc; i++) {
 			Client *c = &clients[s][i];
@@ -65,16 +61,12 @@ tile(void)
 	Client *f = nclients[curspace] ? &clients[curspace][selclient[curspace]] : NULL;
 	XSetInputFocus(dpy, f ? f->win : root, RevertToPointerRoot, CurrentTime);
 	
-	if (f) {
-		XRaiseWindow(dpy, f->win);
-	}
+	if (f) { XRaiseWindow(dpy, f->win); }
 	
 	XSync(dpy, False);
 }
 
-static int
-rmclient(Window w)
-{
+static int rmclient(Window w) {
 	for (int s = 0; s < NSPACE; s++) {
 		for (int i = 0; i < nclients[s]; i++) {
 			if (clients[s][i].win == w) {
@@ -89,14 +81,10 @@ rmclient(Window w)
 
 #include "config.h"
 
-int
-main(void)
-{
+int main(void) {
 	XEvent ev;
 
-	if (!(dpy = XOpenDisplay(NULL))) {
-		errx(1, "cannot open display");
-	}
+	if (!(dpy = XOpenDisplay(NULL))) { errx(1, "cannot open display"); }
 
 	XSetErrorHandler(xerror);
 
@@ -123,13 +111,8 @@ main(void)
 			XWindowAttributes wa;
 			Window w = ev.xmaprequest.window;
 			
-			if (nclients[curspace] >= NCLIENT) {
-				break;
-			}
-			
-			if (!XGetWindowAttributes(dpy, w, &wa) || wa.override_redirect) {
-				break;
-			}
+			if (nclients[curspace] >= NCLIENT) { break; }
+			if (!XGetWindowAttributes(dpy, w, &wa) || wa.override_redirect) { break; }
 			
 			clients[curspace][nclients[curspace]] = (Client){ w, 0 };
 			XSelectInput(dpy, w, EnterWindowMask | StructureNotifyMask);
@@ -141,19 +124,13 @@ main(void)
 			break;
 		}
 		case DestroyNotify:
-			if (rmclient(ev.xdestroywindow.window)) {
-				tile();
-			}
+			if (rmclient(ev.xdestroywindow.window)) { tile(); }
 			break;
 		case UnmapNotify:
-			if (rmclient(ev.xunmap.window)) {
-				tile();
-			}
+			if (rmclient(ev.xunmap.window)) { tile(); }
 			break;
 		case EnterNotify:
-			if (ev.xcrossing.mode != NotifyNormal || ev.xcrossing.detail == NotifyInferior) {
-				break;
-			}
+			if (ev.xcrossing.mode != NotifyNormal || ev.xcrossing.detail == NotifyInferior) { break; }
 			
 			for (int i = 0; i < nclients[curspace]; i++) {
 				if (clients[curspace][i].win == ev.xcrossing.window) {
